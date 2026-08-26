@@ -33,7 +33,7 @@
 /// (The base64 value encodes the `Symbol` "transfer".)
 ///
 /// Iterate returned events; each entry's `value.xdr` decodes to the data tuple.
-use soroban_sdk::{symbol_short, Address, Env, Symbol};
+use soroban_sdk::{symbol_short, Address, Env, String, Symbol};
 
 pub fn emit_transfer(env: &Env, from: Address, to: Address, amount: i128) {
     env.events().publish(
@@ -129,4 +129,13 @@ pub fn emit_recovery_executed(env: &Env, old_admin: Address, new_admin: Address)
 
 pub fn emit_recovery_cancelled(env: &Env) {
     env.events().publish((symbol_short!("rcv_can"),), ());
+}
+
+pub fn emit_external_uri(env: &Env, uri: String) {
+    env.events().publish((symbol_short!("ext_uri"),), uri);
+}
+
+pub fn emit_external_uri_cleared(env: &Env) {
+    env.events()
+        .publish((Symbol::new(env, "ext_uri_cleared"),), ());
 }
