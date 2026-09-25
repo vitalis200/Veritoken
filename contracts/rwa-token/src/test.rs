@@ -2288,21 +2288,60 @@ fn test_recovery_propose_and_read_active() {
 }
 
 #[test]
-fn test_recovery_propose_replaces_existing_proposal() {
+fn test_recovery_propose_rejects_while_proposal_active() {
+    use crate::RwaError;
+    use soroban_sdk::Error;
     let h = setup();
     let members = make_guardians(&h, 3);
     let g1 = members.get(0).unwrap();
     let g2 = members.get(1).unwrap();
     h.token.configure_recovery(&2, &members, &100);
 
+    h.env.ledger().set_sequence_number(1000);
     let admin_a = Address::generate(&h.env);
-    let admin_b = Address::generate(&h.env);
     h.token.propose_recovery(&g1, &admin_a);
-    h.token.propose_recovery(&g2, &admin_b);
 
+    // Expiry = 1000 + 100/2 = 1050; the proposal is still live at the boundary.
+    h.env.ledger().set_sequence_number(1050);
+    let res = h
+        .token
+        .try_propose_recovery(&g2, &Address::generate(&h.env));
+    assert_eq!(
+        res.unwrap_err().unwrap(),
+        Error::from(RwaError::RecoveryAlreadyActive)
+    );
+    let proposal = h.token.active_recovery().unwrap();
+    assert_eq!(proposal.proposed_admin, admin_a);
+    assert_eq!(proposal.proposer, g1);
+
+    // Once expired, the stale proposal can be replaced.
+    h.env.ledger().set_sequence_number(1051);
+    let admin_b = Address::generate(&h.env);
+    h.token.propose_recovery(&g2, &admin_b);
     let proposal = h.token.active_recovery().unwrap();
     assert_eq!(proposal.proposed_admin, admin_b);
     assert_eq!(proposal.proposer, g2);
+}
+
+#[test]
+fn test_recovery_propose_rejects_unreachable_threshold() {
+    use crate::RwaError;
+    use soroban_sdk::Error;
+    let h = setup();
+    let members = make_guardians(&h, 3);
+    let g1 = members.get(0).unwrap();
+    // 3-of-3 passes configure, but the proposer cannot approve, so only 2
+    // approvals are ever reachable.
+    h.token.configure_recovery(&3, &members, &100);
+
+    let res = h
+        .token
+        .try_propose_recovery(&g1, &Address::generate(&h.env));
+    assert_eq!(
+        res.unwrap_err().unwrap(),
+        Error::from(RwaError::InvalidRecoveryConfig)
+    );
+    assert!(h.token.active_recovery().is_none());
 }
 
 #[test]
@@ -2377,6 +2416,35 @@ fn test_recovery_expired_proposal_blocks_approve() {
         res.unwrap_err().unwrap(),
         Error::from(RwaError::RecoveryExpired)
     );
+}
+
+#[test]
+fn test_recovery_execute_rejects_expired_proposal() {
+    use crate::RwaError;
+    use soroban_sdk::Error;
+    let h = setup();
+    let members = make_guardians(&h, 3);
+    let g1 = members.get(0).unwrap();
+    let g2 = members.get(1).unwrap();
+    let g3 = members.get(2).unwrap();
+    h.token.configure_recovery(&2, &members, &100);
+    let nonce_before = h.token.admin_nonce();
+
+    h.env.ledger().set_sequence_number(1000);
+    h.token.propose_recovery(&g1, &Address::generate(&h.env));
+    h.token.approve_recovery(&g2);
+    h.token.approve_recovery(&g3);
+    // Fully approved, but expiry = 1000 + 100/2 = 1050.
+    h.env.ledger().set_sequence_number(1051);
+
+    let res = h.token.try_execute_recovery(&g1);
+    assert_eq!(
+        res.unwrap_err().unwrap(),
+        Error::from(RwaError::RecoveryExpired)
+    );
+    assert_eq!(h.token.admin_nonce(), nonce_before);
+    assert_eq!(h.token.recovery_config().last_executed_ledger, 0);
+    assert!(h.token.active_recovery().is_some());
 }
 
 #[test]

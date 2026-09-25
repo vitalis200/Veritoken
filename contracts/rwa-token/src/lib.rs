@@ -1064,14 +1064,35 @@ impl RwaToken {
         events::emit_recovery_configured(&env, threshold, n);
     }
 
-    /// Opens a new recovery proposal, replacing any prior one. Guardian-only.
+    /// Opens a new recovery proposal. Guardian-only.
     ///
-    /// The proposal expires after `cooldown_ledgers / 2` ledgers.
+    /// The proposal expires after `cooldown_ledgers / 2` ledgers. An expired
+    /// proposal is replaced; a still-live one must be executed or cancelled first.
+    ///
+    /// Panics if:
+    /// - the threshold cannot be met by the non-proposer guardians
+    /// - an unexpired proposal is already active
     pub fn propose_recovery(env: Env, caller: Address, proposed_admin: Address) {
         caller.require_auth();
         let cfg = Self::read_recovery_config(&env);
         let members = Self::read_recovery_members(&env);
         Self::assert_recovery_member(&env, &caller, &members);
+
+        // The proposer cannot approve, so at most members.len() - 1 approvals
+        // are reachable.
+        if cfg.threshold == 0 || cfg.threshold >= members.len() {
+            panic_with_error!(env, RwaError::InvalidRecoveryConfig);
+        }
+
+        if let Some(active) = env
+            .storage()
+            .instance()
+            .get::<_, RecoveryProposal>(&storage_types::DataKey::ActiveRecovery)
+        {
+            if env.ledger().sequence() as u64 <= active.expiry_ledger {
+                panic_with_error!(env, RwaError::RecoveryAlreadyActive);
+            }
+        }
 
         let expiry_ledger = env.ledger().sequence() as u64 + cfg.cooldown_ledgers as u64 / 2;
         let approvals: Vec<Address> = Vec::new(&env);
@@ -1152,6 +1173,7 @@ impl RwaToken {
             .get(&storage_types::DataKey::ActiveRecovery)
             .unwrap_or_else(|| panic_with_error!(env, RwaError::NoActiveRecovery));
 
+        // Reject stale proposals before any admin handoff or state write.
         let seq = env.ledger().sequence() as u64;
         if seq > proposal.expiry_ledger {
             panic_with_error!(env, RwaError::RecoveryExpired);
